@@ -26,11 +26,13 @@ static const char *TAG = "AHT20";
 #define AHT20_SENSOR_BUSY_BIT             7     // Busy Indication Bit
 #define AHT20_SENSOR_BUSY_MAX_RETRIES     8
 #define AHT20_SENSOR_POWERON_DELAY_MS     40
+#define AHT20_SENSOR_SOFT_RESET_DELAY_MS  20
 #define AHT20_SENSOR_INIT_DELAY_MS        10
 #define AHT20_SENSOR_MEAS_DELAY_MS        80
 #define AHT20_SENSOR_BUSY_DELAY_MS        10
 #define AHT20_SENSOR_XFER_TIMEOUT_MS      100   // Read/Write Wait Timeout
 
+#define AHT20_SENSOR_CMD_SOFT_RESET       0xBA
 #define AHT20_SENSOR_CMD_INIT             0xBE
 #define AHT20_SENSOR_CMD_INIT_PARAM1      0x08
 #define AHT20_SENSOR_CMD_INIT_PARAM2      0x00
@@ -68,10 +70,27 @@ static void i2c_master_init(
     ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
 }
 
+static esp_err_t aht20_soft_reset(i2c_master_dev_handle_t dev_handle)
+{
+    ESP_LOGI(TAG, "Sending soft reset command");
+    const uint8_t soft_reset_cmd = AHT20_SENSOR_CMD_SOFT_RESET;
+    esp_err_t ret = i2c_master_transmit(
+        dev_handle,
+        &soft_reset_cmd,
+        sizeof(soft_reset_cmd),
+        AHT20_SENSOR_XFER_TIMEOUT_MS
+    );
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send soft reset command (%s)", esp_err_to_name(ret));
+        return ret;
+    }
+    vTaskDelay(pdMS_TO_TICKS(AHT20_SENSOR_SOFT_RESET_DELAY_MS));
+
+    return ESP_OK;
+}
+
 static esp_err_t aht20_init(i2c_master_dev_handle_t dev_handle)
 {
-    vTaskDelay(pdMS_TO_TICKS(AHT20_SENSOR_POWERON_DELAY_MS));
-
     uint8_t status;
     ESP_ERROR_CHECK(i2c_master_receive(dev_handle, &status, 1, AHT20_SENSOR_XFER_TIMEOUT_MS));
     ESP_LOGI(
@@ -220,6 +239,8 @@ void app_main(void)
     i2c_master_init(&bus_handle, &dev_handle);
     ESP_LOGI(TAG, "I2C initialized successfully");
 
+    vTaskDelay(pdMS_TO_TICKS(AHT20_SENSOR_POWERON_DELAY_MS));
+    ESP_ERROR_CHECK(aht20_soft_reset(dev_handle));
     ESP_ERROR_CHECK(aht20_init(dev_handle));
     ESP_LOGI(TAG, "AHT20 initialized successfully");
 
