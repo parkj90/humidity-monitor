@@ -15,10 +15,10 @@ static const char *TAG = "AHT20";
 #define MONITOR_MAX_RETRIES               20
 
 // I2C Bus
-#define I2C_MASTER_SCL_IO                 CONFIG_I2C_MASTER_SCL
-#define I2C_MASTER_SDA_IO                 CONFIG_I2C_MASTER_SDA
+#define I2C_MASTER_SCL_IO                 CONFIG_AHT20_SCL_GPIO
+#define I2C_MASTER_SDA_IO                 CONFIG_AHT20_SDA_GPIO
 #define I2C_MASTER_NUM                    I2C_NUM_0
-#define I2C_MASTER_FREQ_HZ                CONFIG_I2C_MASTER_FREQUENCY
+#define I2C_MASTER_FREQ_HZ                CONFIG_AHT20_SCL_FREQ_HZ
 
 // AHT20
 #define AHT20_SENSOR_ADDR                 0x38
