@@ -1,9 +1,13 @@
 #include <stdbool.h>
-#include "esp_log.h"
-#include "esp_system.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#include "esp_log.h"
+#include "esp_system.h"
+
 #include "driver/i2c_master.h"
+
 #include "sdkconfig.h"
 
 // Application
