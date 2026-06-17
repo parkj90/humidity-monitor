@@ -6,8 +6,6 @@
 #include "driver/i2c_master.h"
 #include "sdkconfig.h"
 
-static const char *TAG = "AHT20";
-
 // Application
 #define MONITOR_CYCLE_DELAY_MS            2000
 #define MONITOR_RETRY_DELAY_MS            2000
@@ -45,6 +43,10 @@ typedef struct aht20_measurement {
     float temperature;
 } aht20_measurement_t;
 
+static const char *MONITOR_TAG = "Monitor";
+
+static const char *AHT20_TAG = "AHT20";
+
 static void i2c_master_init(
     i2c_master_bus_handle_t *bus_handle,
     i2c_master_dev_handle_t *dev_handle)
@@ -72,7 +74,7 @@ static void i2c_master_init(
 
 static esp_err_t aht20_soft_reset(i2c_master_dev_handle_t dev_handle)
 {
-    ESP_LOGI(TAG, "Sending soft reset command");
+    ESP_LOGI(AHT20_TAG, "Sending soft reset command");
     const uint8_t soft_reset_cmd = AHT20_SENSOR_CMD_SOFT_RESET;
     esp_err_t ret = i2c_master_transmit(
         dev_handle,
@@ -81,7 +83,7 @@ static esp_err_t aht20_soft_reset(i2c_master_dev_handle_t dev_handle)
         AHT20_SENSOR_XFER_TIMEOUT_MS
     );
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send soft reset command (%s)", esp_err_to_name(ret));
+        ESP_LOGE(AHT20_TAG, "Failed to send soft reset command (%s)", esp_err_to_name(ret));
         return ret;
     }
     vTaskDelay(pdMS_TO_TICKS(AHT20_SENSOR_SOFT_RESET_DELAY_MS));
@@ -94,14 +96,14 @@ static esp_err_t aht20_init(i2c_master_dev_handle_t dev_handle)
     uint8_t status;
     ESP_ERROR_CHECK(i2c_master_receive(dev_handle, &status, 1, AHT20_SENSOR_XFER_TIMEOUT_MS));
     ESP_LOGI(
-        TAG,
+        AHT20_TAG,
         "Initial status: 0x%02X, CAL bit: %d",
         status,
         (status >> AHT20_SENSOR_CAL_BIT) & 1
     );
 
     if (!(status & (1 << AHT20_SENSOR_CAL_BIT))) {
-        ESP_LOGI(TAG, "Calibration bit not set. Sending initialization command");
+        ESP_LOGI(AHT20_TAG, "Calibration bit not set. Sending initialization command");
         const uint8_t init_cmd[3] = {
             AHT20_SENSOR_CMD_INIT,
             AHT20_SENSOR_CMD_INIT_PARAM1,
@@ -117,11 +119,11 @@ static esp_err_t aht20_init(i2c_master_dev_handle_t dev_handle)
 
         ESP_ERROR_CHECK(i2c_master_receive(dev_handle, &status, 1, AHT20_SENSOR_XFER_TIMEOUT_MS));
         if (!(status & (1 << AHT20_SENSOR_CAL_BIT))) {
-            ESP_LOGE(TAG, "Invalid status during initialization: 0x%02X", status);
+            ESP_LOGE(AHT20_TAG, "Invalid status during initialization: 0x%02X", status);
             return ESP_ERR_INVALID_STATE;
         }
         ESP_LOGI(
-            TAG,
+            AHT20_TAG,
             "Post-initialization status: 0x%02X, CAL bit: %d",
             status,
             (status >> AHT20_SENSOR_CAL_BIT) & 1
@@ -166,7 +168,7 @@ static bool aht20_crc8_check(const uint8_t *data, size_t data_size) {
 
 static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measurement_t *measurement)
 {
-    ESP_LOGI(TAG, "Sending trigger measurement command");
+    ESP_LOGI(AHT20_TAG, "Sending trigger measurement command");
     const uint8_t trigger_measurement_cmd[3] = {
         AHT20_SENSOR_CMD_TRIG_MEAS,
         AHT20_SENSOR_CMD_TRIG_MEAS_PARAM1,
@@ -179,7 +181,7 @@ static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measure
         AHT20_SENSOR_XFER_TIMEOUT_MS
     );
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send trigger measurement command (%s)", esp_err_to_name(ret));
+        ESP_LOGE(AHT20_TAG, "Failed to send trigger measurement command (%s)", esp_err_to_name(ret));
         return ret;
     }
     vTaskDelay(pdMS_TO_TICKS(AHT20_SENSOR_MEAS_DELAY_MS));
@@ -195,12 +197,12 @@ static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measure
             AHT20_SENSOR_XFER_TIMEOUT_MS
         );
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read measurement data (%s)", esp_err_to_name(ret));
+            ESP_LOGE(AHT20_TAG, "Failed to read measurement data (%s)", esp_err_to_name(ret));
             return ret;
         }
 
-        ESP_LOGD(TAG, "Raw measurement data:");
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, measurement_data, sizeof(measurement_data), ESP_LOG_DEBUG);
+        ESP_LOGD(AHT20_TAG, "Raw measurement data:");
+        ESP_LOG_BUFFER_HEX_LEVEL(AHT20_TAG, measurement_data, sizeof(measurement_data), ESP_LOG_DEBUG);
 
         sensor_busy = measurement_data[0] & (1 << AHT20_SENSOR_BUSY_BIT);
         if (sensor_busy) {
@@ -208,16 +210,16 @@ static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measure
         }
     } while (++retry_count < AHT20_SENSOR_BUSY_MAX_RETRIES && sensor_busy);
     if (sensor_busy) {
-        ESP_LOGE(TAG, "Max retry limit reached waiting for busy sensor");
+        ESP_LOGE(AHT20_TAG, "Max retry limit reached waiting for busy sensor");
         return ESP_ERR_TIMEOUT;
     }
 
     if (!aht20_crc8_check(measurement_data, sizeof(measurement_data))) {
-        ESP_LOGE(TAG, "CRC check failed! Raw measurement data:");
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, measurement_data, sizeof(measurement_data), ESP_LOG_ERROR);
+        ESP_LOGE(AHT20_TAG, "CRC check failed! Raw measurement data:");
+        ESP_LOG_BUFFER_HEX_LEVEL(AHT20_TAG, measurement_data, sizeof(measurement_data), ESP_LOG_ERROR);
         return ESP_ERR_INVALID_CRC;
     }
-    ESP_LOGI(TAG, "CRC check passed");
+    ESP_LOGI(AHT20_TAG, "CRC check passed");
 
     uint32_t signal_humidity = measurement_data[1];
     signal_humidity = signal_humidity << 8 | measurement_data[2];
@@ -237,12 +239,12 @@ void app_main(void)
     i2c_master_bus_handle_t bus_handle;
     i2c_master_dev_handle_t dev_handle;
     i2c_master_init(&bus_handle, &dev_handle);
-    ESP_LOGI(TAG, "I2C initialized successfully");
+    ESP_LOGI(MONITOR_TAG, "I2C initialized successfully");
 
     vTaskDelay(pdMS_TO_TICKS(AHT20_SENSOR_POWERON_DELAY_MS));
     ESP_ERROR_CHECK(aht20_soft_reset(dev_handle));
     ESP_ERROR_CHECK(aht20_init(dev_handle));
-    ESP_LOGI(TAG, "AHT20 initialized successfully");
+    ESP_LOGI(MONITOR_TAG, "AHT20 initialized successfully");
 
     /**
      * The AHT20 datasheet recommends measuring data every 2 seconds.
@@ -256,9 +258,9 @@ void app_main(void)
 
         if (ret != ESP_OK) {
             retry_count++;
-            ESP_LOGW(TAG, "Measurement cycle %d/%d", retry_count, MONITOR_MAX_RETRIES);
+            ESP_LOGW(MONITOR_TAG, "Measurement cycle %d/%d", retry_count, MONITOR_MAX_RETRIES);
             if (retry_count >= MONITOR_MAX_RETRIES) {
-                ESP_LOGE(TAG, "Max retry limit reached. Restarting");
+                ESP_LOGE(MONITOR_TAG, "Max retry limit reached. Restarting");
                 vTaskDelay(pdMS_TO_TICKS(MONITOR_RESTART_DELAY_MS));
                 esp_restart();
             }
@@ -268,8 +270,8 @@ void app_main(void)
         }
         retry_count = 0;
 
-        ESP_LOGI(TAG, "Relative Humidity(%): %f", measurement.humidity);
-        ESP_LOGI(TAG, "Temperature(C):       %f", measurement.temperature);
+        ESP_LOGI(MONITOR_TAG, "Relative Humidity(%): %f", measurement.humidity);
+        ESP_LOGI(MONITOR_TAG, "Temperature(C):       %f", measurement.temperature);
 
         vTaskDelay(pdMS_TO_TICKS(MONITOR_CYCLE_DELAY_MS));
     }
