@@ -1,19 +1,69 @@
 #include <stdbool.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <sys/param.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 
+#include "esp_event.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "esp_system.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
 
 #include "driver/i2c_master.h"
 
 #include "sdkconfig.h"
 
+// WiFi
+#define WIFI_SSID                CONFIG_WIFI_SSID
+#define WIFI_PASS                CONFIG_WIFI_PASSWORD
+#define WIFI_CONNECTED_BIT       BIT0
+#define WIFI_FAIL_BIT            BIT1
+#define WIFI_AUTH_FAIL_BIT       BIT2
+#define WIFI_MAX_RETRIES         CONFIG_WIFI_MAX_RETRIES
+#define WIFI_RETRY_INIT_DELAY_MS 1000
+#define WIFI_RETRY_MAX_DELAY_MS  CONFIG_WIFI_MAX_RETRY_DELAY_MS
+#define WIFI_SEND_TIMEOUT_MS     10000
+
+#if CONFIG_WIFI_WPA3_SAE_PWE_HUNT_AND_PECK
+#define WIFI_SAE_MODE WPA3_SAE_PWE_HUNT_AND_PECK
+#define WIFI_H2E_IDENTIFIER ""
+#elif CONFIG_WIFI_WPA3_SAE_PWE_HASH_TO_ELEMENT
+#define WIFI_SAE_MODE WPA3_SAE_PWE_HASH_TO_ELEMENT
+#define WIFI_H2E_IDENTIFIER CONFIG_WIFI_PW_ID
+#elif CONFIG_WIFI_WPA3_SAE_PWE_BOTH
+#define WIFI_SAE_MODE WPA3_SAE_PWE_BOTH
+#define WIFI_H2E_IDENTIFIER CONFIG_WIFI_PW_ID
+#endif
+
+#if CONFIG_WIFI_AUTH_OPEN
+#define WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_OPEN
+#elif CONFIG_WIFI_AUTH_WEP
+#define WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WEP
+#elif CONFIG_WIFI_AUTH_WPA_PSK
+#define WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA_PSK
+#elif CONFIG_WIFI_AUTH_WPA2_PSK
+#define WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
+#elif CONFIG_WIFI_AUTH_WPA_WPA2_PSK
+#define WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA_WPA2_PSK
+#elif CONFIG_WIFI_AUTH_WPA3_PSK
+#define WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA3_PSK
+#elif CONFIG_WIFI_AUTH_WPA2_WPA3_PSK
+#define WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_WPA3_PSK
+#elif CONFIG_WIFI_AUTH_WAPI_PSK
+#define WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WAPI_PSK
+#endif
+
 // Application
 #define MONITOR_CYCLE_DELAY_MS            2000
 #define MONITOR_RETRY_DELAY_MS            2000
 #define MONITOR_RESTART_DELAY_MS          1000
+#define MONITOR_AUTH_RESTART_DELAY_MS     60000
 #define MONITOR_MAX_RETRIES               20
 
 // I2C Bus
@@ -49,7 +99,142 @@ typedef struct aht20_measurement {
 
 static const char *MONITOR_TAG = "Monitor";
 
+static const char *WIFI_TAG = "WiFi";
+static EventGroupHandle_t s_wifi_event_group;
+static esp_timer_handle_t s_wifi_retry_timer;
+
 static const char *AHT20_TAG = "AHT20";
+
+static void event_handler(
+    void *arg,
+    esp_event_base_t event_base,
+    int32_t event_id,
+    void *event_data)
+{
+    static int retry_num = 0;
+    static uint64_t retry_delay_ms = WIFI_RETRY_INIT_DELAY_MS;
+
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_err_t ret = esp_wifi_connect();
+        if (ret != ESP_OK) {
+            ESP_LOGE(WIFI_TAG, "esp_wifi_connect failed due to: %s", esp_err_to_name(ret));
+        }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        ESP_LOGI(WIFI_TAG, "Station successfully connected to AP");
+        ESP_LOGD(WIFI_TAG, "SSID:%s", WIFI_SSID);
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *data_got_ip = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI(WIFI_TAG, "Got ip:" IPSTR, IP2STR(&data_got_ip->ip_info.ip));
+
+        retry_num = 0;
+        retry_delay_ms = WIFI_RETRY_INIT_DELAY_MS;
+
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT);
+        wifi_event_sta_disconnected_t *data_disconnected = (wifi_event_sta_disconnected_t*) event_data;
+        ESP_LOGE(WIFI_TAG, "Failed to connect to the AP due to: %d", data_disconnected->reason);
+
+        if (data_disconnected->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
+            data_disconnected->reason == WIFI_REASON_AUTH_FAIL) {
+            ESP_LOGE(WIFI_TAG, "Authentication failure detected");
+            xEventGroupSetBits(s_wifi_event_group, WIFI_AUTH_FAIL_BIT);
+            return;
+        }
+
+        if (retry_num < WIFI_MAX_RETRIES) {
+            retry_num++;
+            ESP_LOGI(
+                WIFI_TAG,
+                "Retrying establishing connection to AP: %d/%d, Retry delay: %" PRIu64 "ms",
+                retry_num,
+                WIFI_MAX_RETRIES,
+                retry_delay_ms
+            );
+            esp_timer_stop(s_wifi_retry_timer);
+            ESP_ERROR_CHECK(esp_timer_start_once(s_wifi_retry_timer, retry_delay_ms * 1000));
+
+            retry_delay_ms = MIN(retry_delay_ms * 2, WIFI_RETRY_MAX_DELAY_MS);
+        } else {
+            ESP_LOGE(WIFI_TAG, "Max WiFi connection retry limit reached");
+            retry_num = 0;
+            retry_delay_ms = WIFI_RETRY_INIT_DELAY_MS;
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+    }
+}
+
+static void wifi_retry_timer_callback(void *arg) {
+    esp_err_t ret = esp_wifi_connect();
+    if (ret != ESP_OK) {
+        ESP_LOGE(WIFI_TAG, "esp_wifi_connect failed due to: %s", esp_err_to_name(ret));
+    }
+}
+
+static void wifi_init_sta(void)
+{
+    s_wifi_event_group = xEventGroupCreate();
+
+    ESP_ERROR_CHECK(esp_netif_init());
+
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    esp_timer_create_args_t create_args = {
+        .callback = wifi_retry_timer_callback,
+        .arg = NULL,
+        .name = "wifi_retry_timer"
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&create_args, &s_wifi_retry_timer));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT,
+        WIFI_EVENT_STA_START,
+        &event_handler,
+        NULL,
+        NULL
+    ));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT,
+        WIFI_EVENT_STA_CONNECTED,
+        &event_handler,
+        NULL,
+        NULL
+    ));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT,
+        WIFI_EVENT_STA_DISCONNECTED,
+        &event_handler,
+        NULL,
+        NULL
+    ));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT,
+        IP_EVENT_STA_GOT_IP,
+        &event_handler,
+        NULL,
+        NULL
+    ));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+            .threshold.authmode = WIFI_SCAN_AUTH_MODE_THRESHOLD,
+            .sae_pwe_h2e = WIFI_SAE_MODE,
+            .sae_h2e_identifier = WIFI_H2E_IDENTIFIER,
+#ifdef CONFIG_ESP_WIFI_WPA3_COMPATIBLE_SUPPORT
+            .disable_wpa3_compatible_mode = 0,
+#endif
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+}
 
 static void i2c_master_init(
     i2c_master_bus_handle_t *bus_handle,
@@ -238,8 +423,44 @@ static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measure
     return ESP_OK;
 }
 
+static esp_err_t send_measurement(aht20_measurement_t measurement) {
+    EventBits_t bits = xEventGroupWaitBits(
+        s_wifi_event_group,
+        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT,
+        pdFALSE,
+        pdFALSE,
+        pdMS_TO_TICKS(WIFI_SEND_TIMEOUT_MS)
+    );
+    if (!(bits & (WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT))) {
+        ESP_LOGE(MONITOR_TAG, "WiFi connection timed out");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (bits & WIFI_AUTH_FAIL_BIT) {
+        return ESP_ERR_WIFI_PASSWORD;
+    }
+    if (bits & WIFI_FAIL_BIT) {
+        return ESP_FAIL;
+    }
+
+    ESP_LOGD(MONITOR_TAG, "Connection is up. Sending measurements");
+    // TODO Send Measurements
+
+    return ESP_OK;
+}
+
 void app_main(void)
 {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    ESP_LOGI(MONITOR_TAG, "NVS initialized successfully");
+
+    wifi_init_sta();
+    ESP_LOGI(MONITOR_TAG, "WiFi initialized successfully");
+
     i2c_master_bus_handle_t bus_handle;
     i2c_master_dev_handle_t dev_handle;
     i2c_master_init(&bus_handle, &dev_handle);
@@ -258,7 +479,7 @@ void app_main(void)
     uint8_t retry_count = 0;
     while (1) {
         aht20_measurement_t measurement;
-        esp_err_t ret = aht20_measure(dev_handle, &measurement);
+        ret = aht20_measure(dev_handle, &measurement);
 
         if (ret != ESP_OK) {
             retry_count++;
@@ -276,6 +497,27 @@ void app_main(void)
 
         ESP_LOGI(MONITOR_TAG, "Relative Humidity(%): %f", measurement.humidity);
         ESP_LOGI(MONITOR_TAG, "Temperature(C):       %f", measurement.temperature);
+
+        /**
+         * TODO: replace with a queue-based approach to buffer measurements during outages
+         * instead of skipping send_measurement() and losing measured data.
+         */
+        ret = send_measurement(measurement);
+        if (ret == ESP_ERR_TIMEOUT) {
+            ESP_LOGW(MONITOR_TAG, "WiFi not available, skipping send");
+        } else if (ret == ESP_ERR_WIFI_PASSWORD) {
+            ESP_LOGE(
+                MONITOR_TAG,
+                "WiFi authentication failed — check credentials. Restarting in %ds",
+                MONITOR_AUTH_RESTART_DELAY_MS / 1000
+            );
+            vTaskDelay(pdMS_TO_TICKS(MONITOR_AUTH_RESTART_DELAY_MS));
+            esp_restart();
+        } else if (ret != ESP_OK) {
+            ESP_LOGE(MONITOR_TAG, "Critical WiFi failure encountered. Restarting");
+            vTaskDelay(pdMS_TO_TICKS(MONITOR_RESTART_DELAY_MS));
+            esp_restart();
+        }
 
         vTaskDelay(pdMS_TO_TICKS(MONITOR_CYCLE_DELAY_MS));
     }

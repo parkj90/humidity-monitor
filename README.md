@@ -15,6 +15,17 @@ Built with ESP-IDF v6.0.1
 - ESP32 GND     - AHT20 GND
 ```
 
+### Configuration
+
+Before building, configure the WiFi credentials and other settings:
+
+```
+cd firmware
+idf.py menuconfig
+```
+
+Set WiFi SSID and password under **Humidity Monitor Configuration → WiFi**.
+
 ### Build and Flash
 
 ```
