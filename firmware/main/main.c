@@ -117,7 +117,7 @@ static void event_handler(
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_err_t ret = esp_wifi_connect();
         if (ret != ESP_OK) {
-            ESP_LOGE(WIFI_TAG, "esp_wifi_connect failed due to: %s", esp_err_to_name(ret));
+            ESP_LOGE(WIFI_TAG, "esp_wifi_connect failed (%s)", esp_err_to_name(ret));
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         ESP_LOGI(WIFI_TAG, "Station successfully connected to AP");
@@ -168,7 +168,7 @@ static void wifi_retry_timer_callback(void *arg)
 {
     esp_err_t ret = esp_wifi_connect();
     if (ret != ESP_OK) {
-        ESP_LOGE(WIFI_TAG, "esp_wifi_connect failed due to: %s", esp_err_to_name(ret));
+        ESP_LOGE(WIFI_TAG, "esp_wifi_connect failed (%s)", esp_err_to_name(ret));
     }
 }
 
