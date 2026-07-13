@@ -164,7 +164,8 @@ static void event_handler(
     }
 }
 
-static void wifi_retry_timer_callback(void *arg) {
+static void wifi_retry_timer_callback(void *arg)
+{
     esp_err_t ret = esp_wifi_connect();
     if (ret != ESP_OK) {
         ESP_LOGE(WIFI_TAG, "esp_wifi_connect failed due to: %s", esp_err_to_name(ret));
@@ -337,7 +338,8 @@ static esp_err_t aht20_init(i2c_master_dev_handle_t dev_handle)
  * refin/refout/xorout are not documented. These were inferred from Aosong's reference
  * implementation.
  */
-static bool aht20_crc8_check(const uint8_t *data, size_t data_size) {
+static bool aht20_crc8_check(const uint8_t *data, size_t data_size)
+{
     const uint8_t key = 0x31;
 
     uint8_t crc = 0xFF;
@@ -423,7 +425,8 @@ static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measure
     return ESP_OK;
 }
 
-static esp_err_t send_measurement(aht20_measurement_t measurement) {
+static esp_err_t send_measurement(aht20_measurement_t measurement)
+{
     EventBits_t bits = xEventGroupWaitBits(
         s_wifi_event_group,
         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT,
