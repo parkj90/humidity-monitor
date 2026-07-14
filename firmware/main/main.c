@@ -10,6 +10,8 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -66,6 +68,10 @@
 #define MONITOR_AUTH_RESTART_DELAY_MS     60000
 #define MONITOR_MAX_RETRIES               20
 
+// SNTP
+#define SNTP_SYNC_TIMEOUT_MS              10000
+#define SNTP_SYNC_MAX_RETRIES             6
+
 // I2C Bus
 #define I2C_MASTER_SCL_IO                 CONFIG_AHT20_SCL_GPIO
 #define I2C_MASTER_SDA_IO                 CONFIG_AHT20_SDA_GPIO
@@ -93,8 +99,9 @@
 #define AHT20_SENSOR_CMD_TRIG_MEAS_PARAM2 0x00
 
 typedef struct aht20_measurement {
-    float humidity;
-    float temperature;
+    time_t timestamp;
+    float  humidity;
+    float  temperature;
 } aht20_measurement_t;
 
 static const char *MONITOR_TAG = "Monitor";
@@ -103,9 +110,11 @@ static const char *WIFI_TAG = "WiFi";
 static EventGroupHandle_t s_wifi_event_group;
 static esp_timer_handle_t s_wifi_retry_timer;
 
+static const char *SNTP_SYNC_TAG = "SNTP Sync";
+
 static const char *AHT20_TAG = "AHT20";
 
-static void event_handler(
+static void wifi_event_handler(
     void *arg,
     esp_event_base_t event_base,
     int32_t event_id,
@@ -194,28 +203,28 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT,
         WIFI_EVENT_STA_START,
-        &event_handler,
+        &wifi_event_handler,
         NULL,
         NULL
     ));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT,
         WIFI_EVENT_STA_CONNECTED,
-        &event_handler,
+        &wifi_event_handler,
         NULL,
         NULL
     ));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT,
         WIFI_EVENT_STA_DISCONNECTED,
-        &event_handler,
+        &wifi_event_handler,
         NULL,
         NULL
     ));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT,
         IP_EVENT_STA_GOT_IP,
-        &event_handler,
+        &wifi_event_handler,
         NULL,
         NULL
     ));
@@ -235,6 +244,84 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+}
+
+static esp_err_t wifi_connected_wait(TickType_t timeout)
+{
+    EventBits_t bits = xEventGroupWaitBits(
+        s_wifi_event_group,
+        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT,
+        pdFALSE,
+        pdFALSE,
+        timeout
+    );
+    if (!(bits & (WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT))) {
+        ESP_LOGE(WIFI_TAG, "WiFi connection timed out");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (bits & WIFI_AUTH_FAIL_BIT) {
+        return ESP_ERR_WIFI_PASSWORD;
+    }
+    if (bits & WIFI_FAIL_BIT) {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+static void sntp_sync_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base; (void)id;
+    const esp_netif_sntp_time_sync_t *evt = (const esp_netif_sntp_time_sync_t *)data;
+    if (evt) {
+        char ts[64];
+        time_t t = evt->tv.tv_sec;
+        struct tm tm_utc;
+        gmtime_r(&t, &tm_utc);
+        strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_utc);
+        ESP_LOGI(SNTP_SYNC_TAG, "SNTP event: time synced (UTC): %s", ts);
+    } else {
+        ESP_LOGI(SNTP_SYNC_TAG, "SNTP event: time synced (no timeval provided)");
+    }
+}
+
+static esp_err_t sntp_sync_init(void)
+{
+    esp_err_t ret = wifi_connected_wait(portMAX_DELAY);
+    if (ret != ESP_OK) {
+        ESP_LOGE(SNTP_SYNC_TAG, "Failed to initialize SNTP sync due to WiFi not connected");
+        return ret;
+    }
+
+    ESP_LOGD(SNTP_SYNC_TAG, "Connection is up. Syncing SNTP");
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        NETIF_SNTP_EVENT,
+        NETIF_SNTP_TIME_SYNC,
+        &sntp_sync_event_handler,
+        NULL,
+        NULL
+    ));
+
+    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
+        2,
+        ESP_SNTP_SERVER_LIST("pool.ntp.org", "time.cloudflare.com")
+    );
+    ESP_ERROR_CHECK(esp_netif_sntp_init(&config));
+
+    uint8_t retry_count = 0;
+    do {
+        ret = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_SYNC_TIMEOUT_MS));
+        if (ret != ESP_OK) {
+            ESP_LOGW(
+                SNTP_SYNC_TAG,
+                "SNTP sync attempt %d/%d failed (%s)",
+                retry_count + 1,
+                SNTP_SYNC_MAX_RETRIES,
+                esp_err_to_name(ret)
+            );
+        }
+    } while (++retry_count < SNTP_SYNC_MAX_RETRIES && ret != ESP_OK);
+    return ret;
 }
 
 static void i2c_master_init(
@@ -375,6 +462,7 @@ static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measure
         ESP_LOGE(AHT20_TAG, "Failed to send trigger measurement command (%s)", esp_err_to_name(ret));
         return ret;
     }
+    time(&(measurement->timestamp));
     vTaskDelay(pdMS_TO_TICKS(AHT20_SENSOR_MEAS_DELAY_MS));
 
     bool sensor_busy = true;
@@ -427,22 +515,10 @@ static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measure
 
 static esp_err_t send_measurement(aht20_measurement_t measurement)
 {
-    EventBits_t bits = xEventGroupWaitBits(
-        s_wifi_event_group,
-        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT,
-        pdFALSE,
-        pdFALSE,
-        pdMS_TO_TICKS(WIFI_SEND_TIMEOUT_MS)
-    );
-    if (!(bits & (WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT))) {
-        ESP_LOGE(MONITOR_TAG, "WiFi connection timed out");
-        return ESP_ERR_TIMEOUT;
-    }
-    if (bits & WIFI_AUTH_FAIL_BIT) {
-        return ESP_ERR_WIFI_PASSWORD;
-    }
-    if (bits & WIFI_FAIL_BIT) {
-        return ESP_FAIL;
+    esp_err_t ret = wifi_connected_wait(pdMS_TO_TICKS(WIFI_SEND_TIMEOUT_MS));
+    if (ret != ESP_OK) {
+        ESP_LOGE(MONITOR_TAG, "Failed to send measurement while waiting for wifi connection");
+        return ret;
     }
 
     ESP_LOGD(MONITOR_TAG, "Connection is up. Sending measurements");
@@ -463,6 +539,22 @@ void app_main(void)
 
     wifi_init_sta();
     ESP_LOGI(MONITOR_TAG, "WiFi initialized successfully");
+
+    ret = sntp_sync_init();
+    if (ret == ESP_ERR_WIFI_PASSWORD) {
+        ESP_LOGE(
+            MONITOR_TAG,
+            "SNTP sync init failed due to WiFi authentication — check credentials. Restarting in %ds",
+            MONITOR_AUTH_RESTART_DELAY_MS / 1000
+        );
+        vTaskDelay(pdMS_TO_TICKS(MONITOR_AUTH_RESTART_DELAY_MS));
+        esp_restart();
+    } else if (ret != ESP_OK) {
+        ESP_LOGE(MONITOR_TAG, "SNTP sync failed (%s). Restarting", esp_err_to_name(ret));
+        vTaskDelay(pdMS_TO_TICKS(MONITOR_RESTART_DELAY_MS));
+        esp_restart();
+    }
+    ESP_LOGI(SNTP_SYNC_TAG, "SNTP initialized successfully");
 
     i2c_master_bus_handle_t bus_handle;
     i2c_master_dev_handle_t dev_handle;
@@ -498,6 +590,7 @@ void app_main(void)
         }
         retry_count = 0;
 
+        ESP_LOGI(MONITOR_TAG, "Timestamp: %lld", (long long)measurement.timestamp);
         ESP_LOGI(MONITOR_TAG, "Relative Humidity(%): %f", measurement.humidity);
         ESP_LOGI(MONITOR_TAG, "Temperature(C):       %f", measurement.temperature);
 
@@ -511,13 +604,13 @@ void app_main(void)
         } else if (ret == ESP_ERR_WIFI_PASSWORD) {
             ESP_LOGE(
                 MONITOR_TAG,
-                "WiFi authentication failed — check credentials. Restarting in %ds",
+                "Send measurement failed due to WiFi authentication — check credentials. Restarting in %ds",
                 MONITOR_AUTH_RESTART_DELAY_MS / 1000
             );
             vTaskDelay(pdMS_TO_TICKS(MONITOR_AUTH_RESTART_DELAY_MS));
             esp_restart();
         } else if (ret != ESP_OK) {
-            ESP_LOGE(MONITOR_TAG, "Critical WiFi failure encountered. Restarting");
+            ESP_LOGE(MONITOR_TAG, "Send measurement failed (%s). Restarting", esp_err_to_name(ret));
             vTaskDelay(pdMS_TO_TICKS(MONITOR_RESTART_DELAY_MS));
             esp_restart();
         }
