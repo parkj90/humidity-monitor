@@ -4,7 +4,7 @@ A humidity and temperature monitoring system using an ESP32 and AHT20 sensor.
 
 ## Firmware
 
-Built with ESP-IDF v6.0.1
+Built with ESP-IDF v6.1
 
 ### Hardware Setup
 
