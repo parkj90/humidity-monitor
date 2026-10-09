@@ -13,6 +13,14 @@ No authentication is required. All devices are assumed to share a trusted local 
 
 A path parameter that fails validation results in a `400` response.
 
+## Error Response Body
+
+Every error response (4xx) documented in this reference has a JSON body with a human-readable message:
+
+| Field   | Type   | Description                                        |
+|---------|--------|----------------------------------------------------|
+| `error` | string | Details regarding the error. For logging purposes. |
+
 ## `GET` /monitors/{monitor-id}/readings
 
 Returns the last submitted sensor reading from a monitor device.
@@ -33,6 +41,7 @@ Returns the last submitted sensor reading from a monitor device.
 
 | Status code | Description             |
 |-------------|-------------------------|
+| `400`       | Invalid `monitor-id`.   |
 | `404`       | `monitor-id` not found. |
 
 ## `POST` /monitors/{monitor-id}/readings
@@ -57,9 +66,10 @@ Submit a sensor reading from a monitor device.
 
 ### Response status codes
 
-| Status code | Description                        |
-|-------------|------------------------------------|
-| `201`       | Reading accepted.                  |
-| `400`       | Malformed request. See error body. |
+| Status code | Description                                                |
+|-------------|------------------------------------------------------------|
+| `201`       | Reading accepted.                                          |
+| `400`       | Malformed request or invalid `monitor-id`. See error body. |
+| `415`       | `Content-Type` is missing or not `application/json`.       |
 
 Devices should treat network errors as transient and retry. 4xx responses indicate a client error and should not be retried.
