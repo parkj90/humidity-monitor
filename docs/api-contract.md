@@ -7,8 +7,8 @@ No authentication is required. All devices are assumed to share a trusted local 
 ## Path Parameters Reference
 
 * **`monitor-id`** (string, required)
-  * **Description:** The unique identifier of the monitoring device.
-  * **Validation:** Must match regex `^[a-z0-9-]+$`.
+  * **Description:** The unique identifier of the monitoring device. Must contain 1-64 numbers, lowercase letters, or `-`.
+  * **Validation:** Must match regex `^[a-z0-9-]{1,64}$`.
   * **Example:** `bedroom-monitor-1`
 
 A path parameter that fails validation results in a `400` response.
