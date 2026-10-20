@@ -14,6 +14,8 @@ import (
 
 const validBody = `{"measured_at":1791887265,"humidity":45.2,"temperature":21.7}`
 
+const maxRequestBodyBytes = 1 << 20
+
 func newTestServer() http.Handler {
 	return app.NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
@@ -112,12 +114,20 @@ func TestCreateReading(t *testing.T) {
 			want:        http.StatusUnsupportedMediaType,
 		},
 		{
+			name:        "max bytes exceeded",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        `{"pad":"` + strings.Repeat("a", maxRequestBodyBytes) + `"}`,
+			want:        http.StatusRequestEntityTooLarge,
+			wantError:   "maximum bytes (1048576) exceeded in request body",
+		},
+		{
 			name:        "invalid json",
 			monitorID:   "test-monitor-1",
 			contentType: "application/json",
 			body:        `{not json`,
 			want:        http.StatusBadRequest,
-			wantError:   "request body must be valid JSON",
+			wantError:   "syntax error detected at position: 2 in request body",
 		},
 		{
 			name:        "empty body",
@@ -125,7 +135,7 @@ func TestCreateReading(t *testing.T) {
 			contentType: "application/json",
 			body:        "",
 			want:        http.StatusBadRequest,
-			wantError:   "request body must be valid JSON",
+			wantError:   "request body is empty",
 		},
 		{
 			name:        "wrong field type",
@@ -133,7 +143,15 @@ func TestCreateReading(t *testing.T) {
 			contentType: "application/json",
 			body:        `{"humidity":"high"}`,
 			want:        http.StatusBadRequest,
-			wantError:   "request body must be valid JSON",
+			wantError:   "invalid value for the humidity field detected in request body",
+		},
+		{
+			name:        "disallow unknown fields",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        `{"measured_at":1791887265,"humidity":45.2,"temperature":21.7, "foo":"bar"}`,
+			want:        http.StatusBadRequest,
+			wantError:   "unknown field detected in request body JSON",
 		},
 		{
 			name:        "invalid monitor id",

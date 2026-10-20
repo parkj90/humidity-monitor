@@ -2,11 +2,14 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"mime"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 type apiErrorDetails struct {
@@ -14,6 +17,9 @@ type apiErrorDetails struct {
 	err      error
 	response string
 }
+
+// keep in sync with the 413 row in docs/api-contract.md
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
 var validMonitorID = regexp.MustCompile("^[a-z0-9-]{1,64}$")
 
@@ -66,13 +72,34 @@ func handleCreateReading(logger *slog.Logger) http.Handler {
 			return
 		}
 
-		// TODO validate the request body more strictly
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
 		reading, err := decode[Reading](r)
 		if err != nil {
+			status := http.StatusBadRequest
+			var response string
+			var maxBytesError *http.MaxBytesError
+			var syntaxError *json.SyntaxError
+			var unmarshalTypeError *json.UnmarshalTypeError
+			switch {
+			case errors.As(err, &maxBytesError):
+				status = http.StatusRequestEntityTooLarge
+				response = fmt.Sprintf("maximum bytes (%d) exceeded in request body", maxBytesError.Limit)
+			case errors.As(err, &syntaxError):
+				response = fmt.Sprintf("syntax error detected at position: %d in request body", syntaxError.Offset)
+			case errors.As(err, &unmarshalTypeError):
+				response = fmt.Sprintf("invalid value for the %s field detected in request body", unmarshalTypeError.Field)
+			case strings.Contains(err.Error(), "unknown field"):
+				response = "unknown field detected in request body JSON"
+			case errors.Is(err, io.EOF):
+				response = "request body is empty"
+			default:
+				response = "request body must be valid JSON"
+			}
 			encodeError(logger, w, r, apiErrorDetails{
-				status:   http.StatusBadRequest,
+				status:   status,
 				err:      err,
-				response: "request body must be valid JSON",
+				response: response,
 			})
 			return
 		}
@@ -124,7 +151,9 @@ func encode[T any](w http.ResponseWriter, status int, v T) error {
 
 func decode[T any](r *http.Request) (T, error) {
 	var v T
-	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&v); err != nil {
 		return v, fmt.Errorf("decode json: %w", err)
 	}
 	return v, nil

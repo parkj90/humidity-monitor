@@ -66,10 +66,11 @@ Submit a sensor reading from a monitor device.
 
 ### Response status codes
 
-| Status code | Description                                                |
-|-------------|------------------------------------------------------------|
-| `201`       | Reading accepted.                                          |
-| `400`       | Malformed request or invalid `monitor-id`. See error body. |
-| `415`       | `Content-Type` is missing or not `application/json`.       |
+| Status code | Description                                                                         |
+|-------------|-------------------------------------------------------------------------------------|
+| `201`       | Reading accepted.                                                                   |
+| `400`       | Malformed request (including extra fields) or invalid `monitor-id`. See error body. |
+| `413`       | Request body is too large. Limit is 1 MiB.                                          |
+| `415`       | `Content-Type` is missing or not `application/json`.                                |
 
 Devices should treat network errors as transient and retry. 4xx responses indicate a client error and should not be retried.
