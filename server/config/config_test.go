@@ -21,12 +21,12 @@ func TestParse(t *testing.T) {
 		{
 			name: "defaults",
 			args: []string{"server"},
-			want: config.Config{Host: "0.0.0.0", Port: "8080"},
+			want: config.Config{Host: "127.0.0.1", Port: "8080"},
 		},
 		{
 			name: "overrides",
-			args: []string{"server", "-host", "127.0.0.1", "-port", "7070"},
-			want: config.Config{Host: "127.0.0.1", Port: "7070"},
+			args: []string{"server", "-host", "0.0.0.0", "-port", "7070"},
+			want: config.Config{Host: "0.0.0.0", Port: "7070"},
 		},
 		{
 			name: "help flag",
