@@ -21,21 +21,51 @@ Every error response (4xx) documented in this reference has a JSON body with a h
 |---------|--------|----------------------------------------------------------------|
 | `error` | string | Human-readable description of what was wrong with the request. |
 
+## Objects
+
+A *sample* is a single measurement taken by a monitor's sensor. A monitor does not send samples individually. It summarizes the samples taken over a short interval and sends that summary as a *reading*. Each reading reports the interval it spans and the samples taken within that interval are assumed to be evenly spaced.
+
+### Reading
+
+| Field         | Type                | Description                                                                                |
+|---------------|---------------------|--------------------------------------------------------------------------------------------|
+| `measured_at` | number (int64)      | Unix timestamp in seconds of when the reading's interval closed.                           |
+| `interval`    | number (int)        | Nominal length in seconds of the interval the reading summarizes, ending at `measured_at`. |
+| `count`       | number (int)        | Number of successful samples taken in the reading.                                         |
+| `humidity`    | object (Statistics) | Relative humidity statistics, in percent.                                                  |
+| `temperature` | object (Statistics) | Temperature statistics, in Celsius.                                                        |
+
+Intervals are nominal. Consecutive readings from a monitor can leave small gaps or overlap slightly, and a longer gap means readings are missing.
+
+### Statistics
+
+| Field | Type           | Description                                     |
+|-------|----------------|-------------------------------------------------|
+| `min` | number (float) | Lowest value among the samples in the reading.  |
+| `avg` | number (float) | Mean of the samples in the reading.             |
+| `max` | number (float) | Highest value among the samples in the reading. |
+
+**Example**
+
+```json
+{
+  "measured_at": 1791887265,
+  "interval": 10,
+  "count": 5,
+  "humidity":    { "min": 44.1, "avg": 45.2, "max": 46.0 },
+  "temperature": { "min": 21.5, "avg": 21.7, "max": 21.9 }
+}
+```
+
 ## `GET` /monitors/{monitor-id}/readings
 
-Returns the last submitted sensor reading from a monitor device.
+Returns the most recently submitted reading from a monitor device.
 
 ### Success response
 
 **Code:** `200`
 
-**Body**
-
-| Field         | Type           | Description                   |
-|---------------|----------------|-------------------------------|
-| `measured_at` | number (int64) | Unix timestamp in seconds.    |
-| `humidity`    | number (float) | Relative humidity in percent. |
-| `temperature` | number (float) | Temperature in Celsius.       |
+**Body:** a [Reading](#reading) object.
 
 ### Error response status codes
 
@@ -46,7 +76,7 @@ Returns the last submitted sensor reading from a monitor device.
 
 ## `POST` /monitors/{monitor-id}/readings
 
-Submit a sensor reading from a monitor device.
+Submit a reading from a monitor device.
 
 ### Parameters
 
@@ -56,13 +86,7 @@ Submit a sensor reading from a monitor device.
 |----------------|--------------------|
 | `Content-Type` | `application/json` |
 
-**Body**
-
-| Field         | Type           | Description                   |
-|---------------|----------------|-------------------------------|
-| `measured_at` | number (int64) | Unix timestamp in seconds.    |
-| `humidity`    | number (float) | Relative humidity in percent. |
-| `temperature` | number (float) | Temperature in Celsius.       |
+**Body:** a [Reading](#reading) object.
 
 ### Response status codes
 

@@ -42,7 +42,14 @@ func handleGetReading(logger *slog.Logger) http.Handler {
 		logger.Debug("validated monitorID", "monitorID", monitorID)
 
 		// TODO replace with stored Reading
-		if err := encode(w, http.StatusOK, Reading{MeasuredAt: 1791887265, Humidity: 45.2, Temperature: 21.7}); err != nil {
+		reading := Reading{
+			MeasuredAt:  1791887265,
+			Interval:    10,
+			Count:       5,
+			Humidity:    Statistics{Min: 44.1, Avg: 45.2, Max: 46.0},
+			Temperature: Statistics{Min: 21.5, Avg: 21.7, Max: 21.9},
+		}
+		if err := encode(w, http.StatusOK, reading); err != nil {
 			logger.Error("failed to encode Reading response", "err", err)
 		}
 	})

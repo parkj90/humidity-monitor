@@ -12,7 +12,7 @@ import (
 	"github.com/parkj90/humidity-monitor/server/app"
 )
 
-const validBody = `{"measured_at":1791887265,"humidity":45.2,"temperature":21.7}`
+const validBody = `{"measured_at":1791887265,"interval":10,"count":5,"humidity":{"min":44.1,"avg":45.2,"max":46.0},"temperature":{"min":21.5,"avg":21.7,"max":21.9}}`
 
 const maxRequestBodyBytes = 1 << 20
 
@@ -149,9 +149,41 @@ func TestCreateReading(t *testing.T) {
 			name:        "disallow unknown fields",
 			monitorID:   "test-monitor-1",
 			contentType: "application/json",
-			body:        `{"measured_at":1791887265,"humidity":45.2,"temperature":21.7, "foo":"bar"}`,
+			body:        `{"measured_at":1791887265,"interval":10,"count":5,"humidity":{"min":44.1,"avg":45.2,"max":46.0},"temperature":{"min":21.5,"avg":21.7,"max":21.9}, "foo":"bar"}`,
 			want:        http.StatusBadRequest,
 			wantError:   "unknown field detected in request body JSON",
+		},
+		{
+			name:        "disallow unknown nested fields",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        `{"humidity":{"median":45.0}}`,
+			want:        http.StatusBadRequest,
+			wantError:   "unknown field detected in request body JSON",
+		},
+		{
+			name:        "wrong nested field type",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        `{"humidity":{"min":"low"}}`,
+			want:        http.StatusBadRequest,
+			wantError:   "invalid value for the humidity.min field detected in request body",
+		},
+		{
+			name:        "non-integer count",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        `{"count":5.5}`,
+			want:        http.StatusBadRequest,
+			wantError:   "invalid value for the count field detected in request body",
+		},
+		{
+			name:        "non-integer interval",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        `{"interval":10.5}`,
+			want:        http.StatusBadRequest,
+			wantError:   "invalid value for the interval field detected in request body",
 		},
 		{
 			name:        "invalid monitor id",
