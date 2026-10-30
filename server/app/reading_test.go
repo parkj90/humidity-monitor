@@ -61,6 +61,19 @@ func TestReadingKeysAndTypes(t *testing.T) {
 	}
 }
 
+func assertKeys(t *testing.T, name string, got map[string]any, want []string) {
+	t.Helper()
+
+	var gotKeys []string
+	for key := range got {
+		gotKeys = append(gotKeys, key)
+	}
+	slices.Sort(gotKeys)
+	if !slices.Equal(gotKeys, want) {
+		t.Errorf("got %s keys %v, want %v", name, gotKeys, want)
+	}
+}
+
 func TestReadingFieldMapping(t *testing.T) {
 	const contractExample = `{
 		"measured_at": 1791887265,
@@ -84,18 +97,5 @@ func TestReadingFieldMapping(t *testing.T) {
 
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
-	}
-}
-
-func assertKeys(t *testing.T, name string, got map[string]any, want []string) {
-	t.Helper()
-
-	var gotKeys []string
-	for key := range got {
-		gotKeys = append(gotKeys, key)
-	}
-	slices.Sort(gotKeys)
-	if !slices.Equal(gotKeys, want) {
-		t.Errorf("got %s keys %v, want %v", name, gotKeys, want)
 	}
 }
