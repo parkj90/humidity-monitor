@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type apiErrorDetails struct {
@@ -18,17 +19,18 @@ type apiErrorDetails struct {
 	response string
 }
 
-// keep in sync with the 413 row in docs/api-contract.md
-const maxRequestBodyBytes = 1 << 20 // 1 MiB
+// Keep in sync with specifications in docs/api-contract.md
+const maxRequestBodyBytes = 1 << 20 // 1 MiB. Ref 413 status code
 
 var validMonitorID = regexp.MustCompile("^[a-z0-9-]{1,64}$")
 
 func addRoutes(
 	mux *http.ServeMux,
 	logger *slog.Logger,
+	now func() time.Time,
 ) {
 	mux.Handle("GET /monitors/{monitorID}/readings", handleGetReading(logger))
-	mux.Handle("POST /monitors/{monitorID}/readings", handleCreateReading(logger))
+	mux.Handle("POST /monitors/{monitorID}/readings", handleCreateReading(logger, now))
 }
 
 func handleGetReading(logger *slog.Logger) http.Handler {
@@ -55,7 +57,7 @@ func handleGetReading(logger *slog.Logger) http.Handler {
 	})
 }
 
-func handleCreateReading(logger *slog.Logger) http.Handler {
+func handleCreateReading(logger *slog.Logger, now func() time.Time) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logger.Debug("handling reading create")
 
@@ -81,7 +83,7 @@ func handleCreateReading(logger *slog.Logger) http.Handler {
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 
-		reading, err := decode[Reading](r)
+		unvalidated, err := decode[unvalidatedReading](r)
 		if err != nil {
 			status := http.StatusBadRequest
 			var response string
@@ -110,6 +112,17 @@ func handleCreateReading(logger *slog.Logger) http.Handler {
 			})
 			return
 		}
+
+		reading, err := unvalidated.validate(now())
+		if err != nil {
+			encodeError(logger, w, r, apiErrorDetails{
+				status:   http.StatusBadRequest,
+				err:      fmt.Errorf("invalid reading: %w", err),
+				response: err.Error(),
+			})
+			return
+		}
+
 		logger.Debug("received reading", "reading", reading)
 
 		w.WriteHeader(http.StatusCreated)

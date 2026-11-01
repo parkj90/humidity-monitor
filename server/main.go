@@ -43,6 +43,7 @@ func run(ctx context.Context, stdout, stderr io.Writer, args []string) error {
 
 	srv := app.NewServer(
 		logger,
+		time.Now,
 	)
 	httpServer := &http.Server{
 		Addr:    net.JoinHostPort(cfg.Host, cfg.Port),

@@ -45,6 +45,19 @@ Intervals are nominal. Consecutive readings from a monitor can leave small gaps 
 | `avg` | number (float) | Mean of the samples in the reading.             |
 | `max` | number (float) | Highest value among the samples in the reading. |
 
+### Validation
+
+All fields are required, and a value of 0 is valid. A request that breaks a rule is rejected with a `400`, and only the first failure is reported.
+
+| Field               | Rule                                                                            |
+|---------------------|---------------------------------------------------------------------------------|
+| `measured_at`       | Not before 2026-01-01T00:00:00Z. At most 2 minutes ahead of the server's clock. |
+| `interval`          | From 1 to 60.                                                                   |
+| `count`             | From 1 to 30.                                                                   |
+| `humidity.*`        | From 0 to 100.                                                                  |
+| `temperature.*`     | From -50 to 150.                                                                |
+| `min`, `avg`, `max` | `min <= avg <= max` within each object.                                         |
+
 **Example**
 
 ```json
@@ -90,11 +103,11 @@ Submit a reading from a monitor device.
 
 ### Response status codes
 
-| Status code | Description                                                                         |
-|-------------|-------------------------------------------------------------------------------------|
-| `201`       | Reading accepted.                                                                   |
-| `400`       | Malformed request (including extra fields) or invalid `monitor-id`. See error body. |
-| `413`       | Request body is too large. Limit is 1 MiB.                                          |
-| `415`       | `Content-Type` is missing or not `application/json`.                                |
+| Status code | Description                                                    |
+|-------------|----------------------------------------------------------------|
+| `201`       | Reading accepted.                                              |
+| `400`       | Invalid request. See [Validation](#validation) and error body. |
+| `413`       | Request body is too large. Limit is 1 MiB.                     |
+| `415`       | `Content-Type` is missing or not `application/json`.           |
 
 Devices should treat network errors as transient and retry. 4xx responses indicate a client error and should not be retried.

@@ -2,12 +2,14 @@ package app_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/parkj90/humidity-monitor/server/app"
 )
@@ -16,8 +18,14 @@ const validBody = `{"measured_at":1791887265,"interval":10,"count":5,"humidity":
 
 const maxRequestBodyBytes = 1 << 20
 
+// Matches measured_at in validBody
+var testNow = time.Unix(1791887265, 0)
+
 func newTestServer() http.Handler {
-	return app.NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return app.NewServer(
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		func() time.Time { return testNow },
+	)
 }
 
 func TestGetReading(t *testing.T) {
@@ -64,6 +72,8 @@ func TestGetReading(t *testing.T) {
 }
 
 func TestCreateReading(t *testing.T) {
+	ceiling := testNow.Add(2 * time.Minute).Unix()
+
 	tests := []struct {
 		name        string
 		monitorID   string
@@ -199,6 +209,39 @@ func TestCreateReading(t *testing.T) {
 			body:      validBody,
 			want:      http.StatusBadRequest,
 			wantError: "invalid monitor-id",
+		},
+		// Validation is unit-tested in reading_internal_test.go. The cases below act as a
+		// sanity check to ensure that the handler is hooked up to this validation.
+		{
+			name:        "missing field",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        `{}`,
+			want:        http.StatusBadRequest,
+			wantError:   "measured_at is required",
+		},
+		{
+			name:        "value out of range",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        strings.Replace(validBody, `"count":5`, `"count":0`, 1),
+			want:        http.StatusBadRequest,
+			wantError:   "count must be between 1 and 30",
+		},
+		{
+			name:        "measured_at at ceiling of server clock",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        strings.Replace(validBody, `"measured_at":1791887265`, fmt.Sprintf(`"measured_at":%d`, ceiling), 1),
+			want:        http.StatusCreated,
+		},
+		{
+			name:        "measured_at past ceiling of server clock",
+			monitorID:   "test-monitor-1",
+			contentType: "application/json",
+			body:        strings.Replace(validBody, `"measured_at":1791887265`, fmt.Sprintf(`"measured_at":%d`, ceiling+1), 1),
+			want:        http.StatusBadRequest,
+			wantError:   "measured_at must be at most 2m0s ahead of the server's clock",
 		},
 	}
 
