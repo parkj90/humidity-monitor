@@ -23,19 +23,19 @@ Every error response (4xx) documented in this reference has a JSON body with a h
 
 ## Objects
 
-A *sample* is a single measurement taken by a monitor's sensor. A monitor does not send samples individually. It summarizes the samples taken over a short interval and sends that summary as a *reading*. Each reading reports the interval it spans and the samples taken within that interval are assumed to be evenly spaced.
+A *sample* is a single measurement taken by a monitor's sensor. A monitor does not send samples individually. It summarizes the samples taken over a short interval and sends that summary as a *reading*. Each reading reports the interval it spans but the samples taken within that interval are not assumed to be evenly spaced.
 
 ### Reading
 
 | Field         | Type                | Description                                                                                |
 |---------------|---------------------|--------------------------------------------------------------------------------------------|
 | `measured_at` | number (int64)      | Unix timestamp in seconds of when the reading's interval closed.                           |
-| `interval`    | number (int)        | Nominal length in seconds of the interval the reading summarizes, ending at `measured_at`. |
+| `interval`    | number (int)        | The number of seconds spanned by the sampling cycles that contributed to the reading.      |
 | `count`       | number (int)        | Number of successful samples taken in the reading.                                         |
 | `humidity`    | object (Statistics) | Relative humidity statistics, in percent.                                                  |
 | `temperature` | object (Statistics) | Temperature statistics, in Celsius.                                                        |
 
-Intervals are nominal. Consecutive readings from a monitor can leave small gaps or overlap slightly, and a longer gap means readings are missing.
+Interval is measured by the monitor from its own clock and can vary slightly from reading to reading. It starts when the monitor begins the sampling cycle of the reading's first successful sample and ends when the last successful sample is taken. It includes any failed samples in between but not failed attempts before the first or after the last success. Consecutive readings can therefore leave small gaps (for example, while a reading is being sent) and a longer gap means readings are missing.
 
 ### Statistics
 

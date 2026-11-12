@@ -62,11 +62,13 @@
 #endif
 
 // Application
-#define MONITOR_CYCLE_DELAY_MS            2000
-#define MONITOR_RETRY_DELAY_MS            2000
 #define MONITOR_RESTART_DELAY_MS          1000
 #define MONITOR_AUTH_RESTART_DELAY_MS     60000
-#define MONITOR_MAX_RETRIES               20
+#define MONITOR_MAX_RETRIES               6
+#define MONITOR_MEASUREMENT_DELAY_MS      2000
+#define MONITOR_READING_MEASUREMENT_COUNT 5
+#define MONITOR_READING_MAX_INTERVAL_S    60
+#define MONITOR_READING_MIN_INTERVAL_S    1
 
 // SNTP
 #define SNTP_SYNC_TIMEOUT_MS              10000
@@ -103,6 +105,20 @@ typedef struct aht20_measurement {
     float  humidity;
     float  temperature;
 } aht20_measurement_t;
+
+typedef struct monitor_statistics {
+    float min;
+    float avg;
+    float max;
+} monitor_statistics_t;
+
+typedef struct monitor_reading {
+    time_t               timestamp;
+    uint8_t              interval;
+    uint8_t              count;
+    monitor_statistics_t humidity;
+    monitor_statistics_t temperature;
+} monitor_reading_t;
 
 static const char *MONITOR_TAG = "Monitor";
 
@@ -513,16 +529,84 @@ static esp_err_t aht20_measure(i2c_master_dev_handle_t dev_handle, aht20_measure
     return ESP_OK;
 }
 
-static esp_err_t send_measurement(aht20_measurement_t measurement)
+/**
+ * The AHT20 datasheet recommends measuring data every 2 seconds (MONITOR_MEASUREMENT_DELAY_MS).
+ * In addition to the 2 second delay, additional tasks and delays should provide a sufficient
+ * buffer to prevent the temperature of the sensor from being affected.
+ */
+static esp_err_t monitor_reading_take(i2c_master_dev_handle_t dev_handle, monitor_reading_t *reading)
+{
+    time_t start_time = 0;
+    time_t end_time = 0;
+    uint8_t count = 0;
+    double humidity_total = 0.0;
+    double temperature_total = 0.0;
+    for (int i = 0; i < MONITOR_READING_MEASUREMENT_COUNT; i++) {
+        if (count == 0) {
+            start_time = time(NULL);
+        }
+        vTaskDelay(pdMS_TO_TICKS(MONITOR_MEASUREMENT_DELAY_MS));
+        aht20_measurement_t measurement;
+        esp_err_t ret = aht20_measure(dev_handle, &measurement);
+
+        if (ret != ESP_OK) {
+            ESP_LOGW(MONITOR_TAG, "Failed to take measurement %d/%d", i + 1, MONITOR_READING_MEASUREMENT_COUNT);
+            continue;
+        }
+
+        ESP_LOGD(MONITOR_TAG, "Timestamp: %lld", (long long)measurement.timestamp);
+        ESP_LOGD(MONITOR_TAG, "Relative Humidity(%): %f", measurement.humidity);
+        ESP_LOGD(MONITOR_TAG, "Temperature(C):       %f", measurement.temperature);
+
+        end_time = measurement.timestamp;
+        if (count == 0) {
+            reading->humidity.min = measurement.humidity;
+            reading->humidity.max = measurement.humidity;
+            humidity_total = measurement.humidity;
+
+            reading->temperature.min = measurement.temperature;
+            reading->temperature.max = measurement.temperature;
+            temperature_total = measurement.temperature;
+        } else {
+            reading->humidity.min = MIN(reading->humidity.min, measurement.humidity);
+            reading->humidity.max = MAX(reading->humidity.max, measurement.humidity);
+            humidity_total += measurement.humidity;
+
+            reading->temperature.min = MIN(reading->temperature.min, measurement.temperature);
+            reading->temperature.max = MAX(reading->temperature.max, measurement.temperature);
+            temperature_total += measurement.temperature;
+        }
+        count++;
+    }
+
+    if (count == 0) {
+        ESP_LOGW(MONITOR_TAG, "Failed to take reading. No measurements");
+        return ESP_FAIL;
+    }
+    double interval = difftime(end_time, start_time);
+    if (interval < MONITOR_READING_MIN_INTERVAL_S || interval > MONITOR_READING_MAX_INTERVAL_S) {
+        ESP_LOGE(MONITOR_TAG, "Failed to take reading. Invalid reading interval detected: %f", interval);
+        return ESP_FAIL;
+    }
+
+    reading->timestamp = end_time;
+    reading->interval = (uint8_t)interval;
+    reading->count = count;
+    reading->humidity.avg = humidity_total / count;
+    reading->temperature.avg = temperature_total / count;
+    return ESP_OK;
+}
+
+static esp_err_t monitor_reading_send(const monitor_reading_t *reading)
 {
     esp_err_t ret = wifi_connected_wait(pdMS_TO_TICKS(WIFI_SEND_TIMEOUT_MS));
     if (ret != ESP_OK) {
-        ESP_LOGE(MONITOR_TAG, "Failed to send measurement while waiting for wifi connection");
+        ESP_LOGE(MONITOR_TAG, "Failed to send reading while waiting for wifi connection");
         return ret;
     }
 
-    ESP_LOGD(MONITOR_TAG, "Connection is up. Sending measurements");
-    // TODO Send Measurements
+    ESP_LOGD(MONITOR_TAG, "Connection is up. Sending reading");
+    // TODO Send Reading
 
     return ESP_OK;
 }
@@ -566,16 +650,10 @@ void app_main(void)
     ESP_ERROR_CHECK(aht20_init(dev_handle));
     ESP_LOGI(MONITOR_TAG, "AHT20 initialized successfully");
 
-    /**
-     * The AHT20 datasheet recommends measuring data every 2 seconds.
-     * In addition to the 2 second delay, additional tasks and delays should provide a sufficient
-     * buffer to prevent the temperature of the sensor from being affected.
-     */
     uint8_t retry_count = 0;
     while (1) {
-        aht20_measurement_t measurement;
-        ret = aht20_measure(dev_handle, &measurement);
-
+        monitor_reading_t reading;
+        ret = monitor_reading_take(dev_handle, &reading);
         if (ret != ESP_OK) {
             retry_count++;
             ESP_LOGW(MONITOR_TAG, "Measurement cycle %d/%d", retry_count, MONITOR_MAX_RETRIES);
@@ -584,21 +662,25 @@ void app_main(void)
                 vTaskDelay(pdMS_TO_TICKS(MONITOR_RESTART_DELAY_MS));
                 esp_restart();
             }
-
-            vTaskDelay(pdMS_TO_TICKS(MONITOR_RETRY_DELAY_MS));
             continue;
         }
         retry_count = 0;
 
-        ESP_LOGI(MONITOR_TAG, "Timestamp: %lld", (long long)measurement.timestamp);
-        ESP_LOGI(MONITOR_TAG, "Relative Humidity(%): %f", measurement.humidity);
-        ESP_LOGI(MONITOR_TAG, "Temperature(C):       %f", measurement.temperature);
+        ESP_LOGD(MONITOR_TAG, "Timestamp: %lld", (long long)reading.timestamp);
+        ESP_LOGD(MONITOR_TAG, "Interval: %u", reading.interval);
+        ESP_LOGD(MONITOR_TAG, "Count: %u", reading.count);
+        ESP_LOGD(MONITOR_TAG, "Relative Humidity(%) min: %f", reading.humidity.min);
+        ESP_LOGD(MONITOR_TAG, "Relative Humidity(%) avg: %f", reading.humidity.avg);
+        ESP_LOGD(MONITOR_TAG, "Relative Humidity(%) max: %f", reading.humidity.max);
+        ESP_LOGD(MONITOR_TAG, "Temperature(C) min:       %f", reading.temperature.min);
+        ESP_LOGD(MONITOR_TAG, "Temperature(C) avg:       %f", reading.temperature.avg);
+        ESP_LOGD(MONITOR_TAG, "Temperature(C) max:       %f", reading.temperature.max);
 
         /**
          * TODO: replace with a queue-based approach to buffer measurements during outages
-         * instead of skipping send_measurement() and losing measured data.
+         * instead of skipping monitor_reading_send() and losing measured data.
          */
-        ret = send_measurement(measurement);
+        ret = monitor_reading_send(&reading);
         if (ret == ESP_ERR_TIMEOUT) {
             ESP_LOGW(MONITOR_TAG, "WiFi not available, skipping send");
         } else if (ret == ESP_ERR_WIFI_PASSWORD) {
@@ -614,7 +696,5 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(MONITOR_RESTART_DELAY_MS));
             esp_restart();
         }
-
-        vTaskDelay(pdMS_TO_TICKS(MONITOR_CYCLE_DELAY_MS));
     }
 }
