@@ -1,12 +1,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <math.h>
 #include <sys/param.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 
+#include "cJSON.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -597,18 +599,87 @@ static esp_err_t monitor_reading_take(i2c_master_dev_handle_t dev_handle, monito
     return ESP_OK;
 }
 
+static cJSON *add_rounded_number(cJSON *object, const char *name, float value)
+{
+    if (!isfinite(value)) {
+        return NULL;
+    }
+    return cJSON_AddNumberToObject(object, name, round((double)value * 100.0) / 100.0);
+}
+
+static bool add_statistics(cJSON *parent, const char *name, const monitor_statistics_t *stats)
+{
+    cJSON *object = cJSON_AddObjectToObject(parent, name);
+    if (object == NULL ||
+        add_rounded_number(object, "min", stats->min) == NULL ||
+        add_rounded_number(object, "avg", stats->avg) == NULL ||
+        add_rounded_number(object, "max", stats->max) == NULL) {
+        ESP_LOGE(MONITOR_TAG, "Failed to add %s statistics to cJSON", name);
+        return false;
+    }
+    return true;
+}
+
+static cJSON *monitor_reading_to_cJSON(const monitor_reading_t *reading)
+{
+    cJSON *reading_cJSON = cJSON_CreateObject();
+    if (reading_cJSON == NULL) {
+        ESP_LOGE(MONITOR_TAG, "Failed to construct cJSON");
+        return NULL;
+    }
+    if (cJSON_AddNumberToObject(reading_cJSON, "measured_at", (double)reading->timestamp) == NULL) {
+        ESP_LOGE(MONITOR_TAG, "Failed to add measured_at to cJSON");
+        goto fail;
+    }
+    if (cJSON_AddNumberToObject(reading_cJSON, "interval", (double)reading->interval) == NULL) {
+        ESP_LOGE(MONITOR_TAG, "Failed to add interval to cJSON");
+        goto fail;
+    }
+    if (cJSON_AddNumberToObject(reading_cJSON, "count", (double)reading->count) == NULL) {
+        ESP_LOGE(MONITOR_TAG, "Failed to add count to cJSON");
+        goto fail;
+    }
+
+    if (!add_statistics(reading_cJSON, "humidity", &reading->humidity) ||
+        !add_statistics(reading_cJSON, "temperature", &reading->temperature)) {
+        goto fail;
+    }
+
+    return reading_cJSON;
+
+fail:
+    cJSON_Delete(reading_cJSON);
+    return NULL;
+}
+
 static esp_err_t monitor_reading_send(const monitor_reading_t *reading)
 {
+    cJSON *reading_cJSON = monitor_reading_to_cJSON(reading);
+    if (reading_cJSON == NULL) {
+        ESP_LOGE(MONITOR_TAG, "Failed to serialize reading to cJSON");
+        return ESP_FAIL;
+    }
+
+    char *reading_string = cJSON_PrintUnformatted(reading_cJSON);
+    cJSON_Delete(reading_cJSON);
+    if (reading_string == NULL) {
+        ESP_LOGE(MONITOR_TAG, "Failed to print cJSON");
+        return ESP_FAIL;
+    }
+    ESP_LOGD(MONITOR_TAG, "Reading as JSON string: %s", reading_string);
+
     esp_err_t ret = wifi_connected_wait(pdMS_TO_TICKS(WIFI_SEND_TIMEOUT_MS));
     if (ret != ESP_OK) {
         ESP_LOGE(MONITOR_TAG, "Failed to send reading while waiting for wifi connection");
-        return ret;
+        goto cleanup;
     }
 
     ESP_LOGD(MONITOR_TAG, "Connection is up. Sending reading");
     // TODO Send Reading
 
-    return ESP_OK;
+cleanup:
+    cJSON_free(reading_string);
+    return ret;
 }
 
 void app_main(void)
